@@ -12,8 +12,8 @@ import cv2
 from einops import rearrange, repeat
 import time
 import torch.nn.functional as F
-from devanagari_tokenizer import split_syllables
-from unicode_generation import generate_syllable_image
+from data_loader.devanagari_tokenizer import split_syllables
+from data_loader.unicode_generation import generate_syllable_image
 import re
 
 
