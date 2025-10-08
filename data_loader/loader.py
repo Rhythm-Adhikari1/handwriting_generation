@@ -26,7 +26,7 @@ generate_type = {'iv_s':['train', 'data/Devanagari Dataset/in_vocab.subset.tro.3
                 'oov_u':['test', 'data/Devanagari Dataset/oov.common_words']}
 
 # define the letters and the width of style image
-## letters = '_Only thewigsofrcvdampbkuq.A-210xT5\'MDL,RYHJ"ISPWENj&BC93VGFKz();#:!7U64Q8?+*ZX/%'
+letters = '_Only thewigsofrcvdampbkuq.A-210xT5\'MDL,RYHJ"ISPWENj&BC93VGFKz();#:!7U64Q8?+*ZX/%'
 style_len = 352
 
 """prepare the IAM dataset for training"""
@@ -100,7 +100,7 @@ class IAMDataset(Dataset):
         return new_style_images, new_laplace_images
 
     def get_symbols(self, input_type):
-        with open(f"data/{input_type}.pickle", "rb") as f:
+        with open(f"data/Devanagari Dataset/{input_type}.pickle", "rb") as f:
             data = pickle.load(f)
 
         
