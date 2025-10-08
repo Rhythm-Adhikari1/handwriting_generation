@@ -66,7 +66,12 @@ class IAMDataset(Dataset):
             idx = 0
             for i in train_data:
                 s_id = i[0].split(',')[0]
-                image = i[0].split(',')[1] + '.png'
+
+                image = i[0].split(',')[1]
+
+                if not image.lower().endswith(".png"):
+                    image += ".png"
+
                 transcription = i[1]
                 if len(transcription) > self.max_len:
                     continue
@@ -188,7 +193,7 @@ class IAMDataset(Dataset):
             content_tensor = []
             try:
                 for syl in item['content']:
-                    if syl not in self.syllable2index:
+                    if syl not in self.syllable2index.keys():
                         # Generate image for missing syllable
                         img = generate_syllable_image(syl)
                         img_tensor = torch.from_numpy(np.array(img, dtype=np.float32)).unsqueeze(0) / 255.0
@@ -219,7 +224,9 @@ class IAMDataset(Dataset):
                     style_ref[idx, :, :, 0:item['style'].shape[2]] = item['style'][:, :, :self.style_len]
                     laplace_ref[idx, :, :, 0:item['laplace'].shape[2]] = item['laplace'][:, :, :self.style_len]
             except:
-                print('style', item['style'].shape)
+                print(f"⚠️ Error processing content: {item['content']}")
+                print(f"❌ Exception: {e}")
+                traceback.print_exc()
 
         wid = torch.tensor([item['wid'] for item in batch])
         content_ref = 1.0 - content_ref # invert the image
