@@ -263,74 +263,76 @@ class IAMDataset(Dataset):
 
 """random sampling of style images during inference"""
 class Random_StyleIAMDataset(IAMDataset):
-    def __init__(self, style_path, lapalce_path, ref_num) -> None:
+    """
+    Random sampling of style images for Devanagari authors during inference.
+    Works with Devanagari syllables.
+    """
+    def __init__(self, style_path, laplace_path, ref_num):
         self.style_path = style_path
-        self.laplace_path = lapalce_path
+        self.laplace_path = laplace_path
         self.author_id = os.listdir(os.path.join(self.style_path))
         self.style_len = style_len
         self.ref_num = ref_num
-    
-    def __len__(self):
-        return self.ref_num
-    
-    def get_style_ref(self, wr_id): # Choose the style image whose length exceeds 32 pixels
+
+    def get_style_ref(self, wr_id):
         style_list = os.listdir(os.path.join(self.style_path, wr_id))
         random.shuffle(style_list)
-        for index in range(len(style_list)):
-            style_ref = style_list[index]
-
+        # Pick a style image whose width > 128
+        for style_ref in style_list:
             style_image = cv2.imread(os.path.join(self.style_path, wr_id, style_ref), flags=0)
             laplace_image = cv2.imread(os.path.join(self.laplace_path, wr_id, style_ref), flags=0)
             if style_image.shape[1] > 128:
                 break
-            else:
-                continue
-        style_image = style_image/255.0
-        laplace_image = laplace_image/255.0
+        style_image = style_image / 255.0
+        laplace_image = laplace_image / 255.0
         return style_image, laplace_image
 
     def __getitem__(self, _):
         batch = []
         for idx in self.author_id:
             style_ref, laplace_ref = self.get_style_ref(idx)
-            style_ref = torch.from_numpy(style_ref).unsqueeze(0)
-            style_ref = style_ref.to(torch.float32)
-            laplace_ref = torch.from_numpy(laplace_ref).unsqueeze(0)
-            laplace_ref = laplace_ref.to(torch.float32)
-            wid = idx
-            batch.append({'style':style_ref, 'laplace':laplace_ref, 'wid':wid})
-        
-        s_width = [item['style'].shape[2] for item in batch]
-        if max(s_width) < self.style_len:
-            max_s_width = max(s_width)
-        else:
-            max_s_width = self.style_len
-        style_ref = torch.ones([len(batch), batch[0]['style'].shape[0], batch[0]['style'].shape[1], max_s_width], dtype=torch.float32)
-        laplace_ref = torch.zeros([len(batch), batch[0]['laplace'].shape[0], batch[0]['laplace'].shape[1], max_s_width], dtype=torch.float32)
-        wid_list = []
-        for idx, item in enumerate(batch):
-            try:
-                if max_s_width < self.style_len:
-                    style_ref[idx, :, :, 0:item['style'].shape[2]] = item['style']
-                    laplace_ref[idx, :, :, 0:item['laplace'].shape[2]] = item['laplace']
-                else:
-                    style_ref[idx, :, :, 0:item['style'].shape[2]] = item['style'][:, :, :self.style_len]
-                    laplace_ref[idx, :, :, 0:item['laplace'].shape[2]] = item['laplace'][:, :, :self.style_len]
-                wid_list.append(item['wid'])
-            except:
-                print('style', item['style'].shape)
-        
-        return {'style':style_ref, 'laplace':laplace_ref,'wid':wid_list}
+            style_ref = torch.from_numpy(style_ref).unsqueeze(0).float()
+            laplace_ref = torch.from_numpy(laplace_ref).unsqueeze(0).float()
+            batch.append({'style': style_ref, 'laplace': laplace_ref, 'wid': int(idx)})
 
-"""prepare the content image during inference"""    
+        max_s_width = min(max([item['style'].shape[2] for item in batch]), self.style_len)
+        style_ref = torch.ones([len(batch), 1, batch[0]['style'].shape[1], max_s_width], dtype=torch.float32)
+        laplace_ref = torch.zeros([len(batch), 1, batch[0]['laplace'].shape[1], max_s_width], dtype=torch.float32)
+        wid_list = []
+
+        for idx, item in enumerate(batch):
+            w = min(item['style'].shape[2], max_s_width)
+            style_ref[idx, :, :, :w] = item['style'][:, :, :w]
+            laplace_ref[idx, :, :, :w] = item['laplace'][:, :, :w]
+            wid_list.append(item['wid'])
+
+        return {'style': style_ref, 'laplace': laplace_ref, 'wid': wid_list}
+
+
 class ContentData(IAMDataset):
-    def __init__(self, content_type='unifont') -> None:
-        self.letters = letters
-        self.letter2index = {label: n for n, label in enumerate(self.letters)}
-        self.con_symbols = self.get_symbols(content_type)
-       
+    """
+    Prepares content images for Devanagari syllables during inference.
+    """
+    def __init__(self, content_type='unicode_devanagari'):
+        self.con_symbols = self.get_symbols(content_type)  # Load Devanagari symbols
+        self.syllables = list(self.syllable2index.keys())
+
     def get_content(self, label):
-        word_arch = [self.letter2index[i] for i in label]
-        content_ref = self.con_symbols[word_arch]
-        content_ref = 1.0 - content_ref
-        return content_ref.unsqueeze(0)
+        """
+        label: a string (word) in Devanagari
+        returns: content_ref tensor [num_syllables, 16, 16]
+        """
+        syllables = split_syllables(label)
+        content_tensor = []
+        for syl in syllables:
+            if syl not in self.syllable2index:
+                # generate new syllable image if unseen
+                img = generate_syllable_image(syl)
+                img_tensor = torch.from_numpy(np.array(img, dtype=np.float32)) / 255.0
+                self.con_symbols = torch.cat([self.con_symbols, img_tensor.unsqueeze(0)], dim=0)
+                new_idx = len(self.syllables)
+                self.syllables.append(syl)
+                self.syllable2index[syl] = new_idx
+            content_tensor.append(self.con_symbols[self.syllable2index[syl]])
+        content_ref = torch.stack(content_tensor)
+        return 1.0 - content_ref  # invert like IAMDataset
