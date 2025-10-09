@@ -32,7 +32,7 @@ style_len = 352
 
 """prepare the IAM dataset for training"""
 class IAMDataset(Dataset):
-    def __init__(self, image_path, style_path, laplace_path, type, content_type='unicode_devanagari', max_len=9):
+    def __init__(self, image_path, style_path, laplace_path, type, content_type='unicode_devanagari', max_len=10):
         self.max_len = max_len
         self.style_len = style_len
         self.data_dict = self.load_data(text_path[type])
@@ -41,8 +41,9 @@ class IAMDataset(Dataset):
         self.laplace_path = os.path.join(laplace_path, type)
 
         ##self.letters = letters
-        ##self.tokens = {"PAD_TOKEN": len(self.letters)}    ##
+        ##self.tokens = {"PAD_TOKEN": len(self.letters)}    ## yo kina chainxa herna xa
         ##self.letter2index = {label: n for n, label in enumerate(self.letters)}
+
         self.indices = list(self.data_dict.keys())
         self.transforms = torchvision.transforms.Compose([
                         torchvision.transforms.ToTensor(),
@@ -74,10 +75,14 @@ class IAMDataset(Dataset):
                     image += ".png"
 
                 transcription = i[1]
-                if len(transcription) > self.max_len or len(transcription) == 0:
+                transcription = split_syllables(transcription)
+
+                if len(transcription) > self.max_len or len(transcription) == 0 or len(image) == 0 or len(s_id) == 0:
                     continue
+
                 full_dict[idx] = {'image': image, 's_id': s_id, 'label':transcription}
                 idx += 1
+
         return full_dict
 
     def get_style_ref(self, wr_id):
@@ -126,7 +131,7 @@ class IAMDataset(Dataset):
         #     symbol = torch.from_numpy(symbols[ord(char)]).float()
         #     contents.append(symbol)
 
-        contents.append(torch.zeros_like(contents[0])) # blank image as PAD_TOKEN
+        #contents.append(torch.zeros_like(contents[0])) # blank image as PAD_TOKEN # why necessary need to look ; might be essential
         contents = torch.stack(contents)
         return contents
        
@@ -145,7 +150,7 @@ class IAMDataset(Dataset):
         image_name = self.data_dict[self.indices[idx]]['image']
         label = self.data_dict[self.indices[idx]]['label']
         wr_id = self.data_dict[self.indices[idx]]['s_id']
-        label = split_syllables(label)
+        
         transcr = label.copy()
         img_path = os.path.join(self.image_path, wr_id, image_name)
         image = Image.open(img_path).convert('RGB')
@@ -174,52 +179,29 @@ class IAMDataset(Dataset):
         image_name = [item['image_name'] for item in batch]
 
         # Force fixed style and image width to 352
-        max_s_width = self.style_len   # 352
-        max_img_width = 352            # 👈 added
+        if max(s_width) < self.style_len:
+            max_s_width = max(s_width)
+        else:
+            max_s_width = self.style_len
 
-        # allocate tensors
-        imgs = torch.ones(
-            [len(batch), batch[0]['img'].shape[0], batch[0]['img'].shape[1], max_img_width],
-            dtype=torch.float32
-        )
-        content_ref = torch.zeros([len(batch), max(c_width), 16, 16], dtype=torch.float32)
-        style_ref = torch.ones(
-            [len(batch), batch[0]['style'].shape[0], batch[0]['style'].shape[1], max_s_width],
-            dtype=torch.float32
-        )
-        laplace_ref = torch.zeros(
-            [len(batch), batch[0]['laplace'].shape[0], batch[0]['laplace'].shape[1], max_s_width],
-            dtype=torch.float32
-        )
+        imgs = torch.ones([len(batch), batch[0]['img'].shape[0], batch[0]['img'].shape[1], max(width)], dtype=torch.float32)
+        content_ref = torch.zeros([len(batch), max(c_width), 16 , 16], dtype=torch.float32)
+        
+        style_ref = torch.ones([len(batch), batch[0]['style'].shape[0], batch[0]['style'].shape[1], max_s_width], dtype=torch.float32)
+        laplace_ref = torch.zeros([len(batch), batch[0]['laplace'].shape[0], batch[0]['laplace'].shape[1], max_s_width], dtype=torch.float32)
         target = torch.zeros([len(batch), max(target_lengths)], dtype=torch.int32)
 
         for idx, item in enumerate(batch):
             # --- pad/truncate style & laplace ---
             try:
-                w = item['style'].shape[2]
-                if w < self.style_len:
-                    style_ref[idx, :, :, :w] = item['style']
-                    laplace_ref[idx, :, :, :w] = item['laplace']
-                else:
-                    style_ref[idx, :, :, :] = item['style'][:, :, :self.style_len]
-                    laplace_ref[idx, :, :, :] = item['laplace'][:, :, :self.style_len]
-            except Exception as e:
-                print(f"⚠️ Error processing style/laplace for {item['image_name']}: {e}")
-
-            # --- word image (fix width = 352) ---
-            try:
-                img_w = item['img'].shape[2]
-                if img_w < max_img_width:
-                    imgs[idx, :, :, :img_w] = item['img']
-                else:
-                    imgs[idx, :, :, :] = item['img'][:, :, :max_img_width]
-            except Exception as e:
-                print(f"⚠️ img error for {item['image_name']}: {e}")
+                imgs[idx, :, :, 0:item['img'].shape[2]] = item['img']
+            except:
+                print('img', item['img'].shape)
 
             # --- content symbols ---
             content_tensor = []
-            if not item['content']:
-                item['content'].append('|')
+            # if not item['content']:
+            #     item['content'].append('|')
             try:
                 for syl in item['content']:
                     if syl not in self.syllable2index.keys():
@@ -241,6 +223,17 @@ class IAMDataset(Dataset):
             target[idx, :len(transcr[idx])] = torch.Tensor(
                 [self.syllable2index[t] for t in transcr[idx]]
             )
+
+            try:
+                if max_s_width < self.style_len:
+                    style_ref[idx, :, :, 0:item['style'].shape[2]] = item['style']
+                    laplace_ref[idx, :, :, 0:item['laplace'].shape[2]] = item['laplace']
+                else:
+                    style_ref[idx, :, :, 0:item['style'].shape[2]] = item['style'][:, :, :self.style_len]
+                    laplace_ref[idx, :, :, 0:item['laplace'].shape[2]] = item['laplace'][:, :, :self.style_len]
+            except:
+                print('style', item['style'].shape)
+
 
         wid = torch.tensor([item['wid'] for item in batch])
         content_ref = 1.0 - content_ref  # invert image
