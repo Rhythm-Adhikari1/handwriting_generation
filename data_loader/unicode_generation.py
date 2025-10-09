@@ -7,7 +7,7 @@ import uharfbuzz as hb
 
 image_width, image_height = 16, 16  # Slightly larger for better visibility
 background_color = 255  # white
-font_path = 'NotoSansDevanagari-Regular.ttf'  
+font_path = 'data_loader/NotoSansDevanagari-Regular.ttf'  
 
 def generate_syllable_image(syllable_text):
     # --- Load font bytes for HarfBuzz ---

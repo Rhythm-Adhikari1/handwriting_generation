@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from data_loader.devanagari_tokenizer import split_syllables
 from data_loader.unicode_generation import generate_syllable_image
 import re
+import traceback
 
 
 text_path = {'train':'data/Devanagari Dataset/train_word.txt',
@@ -73,7 +74,7 @@ class IAMDataset(Dataset):
                     image += ".png"
 
                 transcription = i[1]
-                if len(transcription) > self.max_len:
+                if len(transcription) > self.max_len or len(transcription) == 0:
                     continue
                 full_dict[idx] = {'image': image, 's_id': s_id, 'label':transcription}
                 idx += 1
@@ -164,74 +165,90 @@ class IAMDataset(Dataset):
 
 
     def collate_fn_(self, batch):
-        width = [item['img'].shape[2] for item in batch] 
-        c_width = [len(item['content']) for item in batch] #
+        width = [item['img'].shape[2] for item in batch]
+        c_width = [len(item['content']) for item in batch]
         s_width = [item['style'].shape[2] for item in batch]
 
-        transcr = [item['transcr'] for item in batch] #
-        target_lengths = torch.IntTensor([len(t) for t in transcr]) #
+        transcr = [item['transcr'] for item in batch]
+        target_lengths = torch.IntTensor([len(t) for t in transcr])
         image_name = [item['image_name'] for item in batch]
 
-        if max(s_width) < self.style_len:
-            max_s_width = max(s_width)
-        else:
-            max_s_width = self.style_len
+        # Force fixed style width to 352
+        max_s_width = self.style_len
 
-        imgs = torch.ones([len(batch), batch[0]['img'].shape[0], batch[0]['img'].shape[1], max(width)], dtype=torch.float32)
-        content_ref = torch.zeros([len(batch), max(c_width), 16 , 16], dtype=torch.float32) #
-        
-        style_ref = torch.ones([len(batch), batch[0]['style'].shape[0], batch[0]['style'].shape[1], max_s_width], dtype=torch.float32)
-        laplace_ref = torch.zeros([len(batch), batch[0]['laplace'].shape[0], batch[0]['laplace'].shape[1], max_s_width], dtype=torch.float32)
-        target = torch.zeros([len(batch), max(target_lengths)], dtype=torch.int32) #
+        # allocate tensors
+        imgs = torch.ones(
+            [len(batch), batch[0]['img'].shape[0], batch[0]['img'].shape[1], max(width)],
+            dtype=torch.float32
+        )
+        content_ref = torch.zeros([len(batch), max(c_width), 16, 16], dtype=torch.float32)
+        style_ref = torch.ones(
+            [len(batch), batch[0]['style'].shape[0], batch[0]['style'].shape[1], max_s_width],
+            dtype=torch.float32
+        )
+        laplace_ref = torch.zeros(
+            [len(batch), batch[0]['laplace'].shape[0], batch[0]['laplace'].shape[1], max_s_width],
+            dtype=torch.float32
+        )
+        target = torch.zeros([len(batch), max(target_lengths)], dtype=torch.int32)
 
         for idx, item in enumerate(batch):
+            # --- pad/truncate style & laplace ---
             try:
-                imgs[idx, :, :, 0:item['img'].shape[2]] = item['img']
+                w = item['style'].shape[2]
+                if w < self.style_len:
+                    style_ref[idx, :, :, :w] = item['style']
+                    laplace_ref[idx, :, :, :w] = item['laplace']
+                else:
+                    style_ref[idx, :, :, :] = item['style'][:, :, :self.style_len]
+                    laplace_ref[idx, :, :, :] = item['laplace'][:, :, :self.style_len]
+            except Exception as e:
+                print(f"⚠️ Error processing style/laplace for {item['image_name']}: {e}")
+
+            # --- image ---
+            try:
+                imgs[idx, :, :, :item['img'].shape[2]] = item['img']
             except:
-                print('img', item['img'].shape)
-            
+                print('⚠️ img', item['img'].shape)
+
+            # --- content symbols ---
             content_tensor = []
             try:
                 for syl in item['content']:
                     if syl not in self.syllable2index.keys():
-                        # Generate image for missing syllable
                         img = generate_syllable_image(syl)
-                        img_tensor = torch.from_numpy(np.array(img, dtype=np.float32)).unsqueeze(0) / 255.0
+                        img_tensor = torch.from_numpy(np.array(img, dtype=np.float32)) / 255.0
                         self.con_symbols = torch.cat([self.con_symbols, img_tensor.unsqueeze(0)], dim=0)
-
-                        # Update mappings
                         new_index = len(self.syllables)
                         self.syllables.append(syl)
                         self.syllable2index[syl] = new_index
-
-                    # Use updated index
                     content_tensor.append(self.con_symbols[self.syllable2index[syl]])
 
-                # Fill content_ref
                 content_tensor = torch.stack(content_tensor)
                 content_ref[idx, :len(content_tensor)] = content_tensor
-            
-            except:
-                print('content', item['content'])
 
-            target[idx, :len(transcr[idx])] = torch.Tensor([self.syllable2index[t] for t in transcr[idx]])
-            
-            try:
-                if max_s_width < self.style_len:
-                    style_ref[idx, :, :, 0:item['style'].shape[2]] = item['style']
-                    laplace_ref[idx, :, :, 0:item['laplace'].shape[2]] = item['laplace']
-                else:
-                    style_ref[idx, :, :, 0:item['style'].shape[2]] = item['style'][:, :, :self.style_len]
-                    laplace_ref[idx, :, :, 0:item['laplace'].shape[2]] = item['laplace'][:, :, :self.style_len]
-            except:
-                print(f"⚠️ Error processing content: {item['content']}")
-                print(f"❌ Exception: {e}")
-                traceback.print_exc()
+            except Exception as e:
+                print(f"⚠️ content error for {item['image_name']}: {e}")
+
+            # --- transcription labels ---
+            target[idx, :len(transcr[idx])] = torch.Tensor(
+                [self.syllable2index[t] for t in transcr[idx]]
+            )
 
         wid = torch.tensor([item['wid'] for item in batch])
-        content_ref = 1.0 - content_ref # invert the image
-        return {'img':imgs, 'style':style_ref, 'content':content_ref, 'wid':wid, 'laplace':laplace_ref,
-                'target':target, 'target_lengths':target_lengths, 'image_name':image_name}
+        content_ref = 1.0 - content_ref  # invert image
+
+        return {
+            'img': imgs,
+            'style': style_ref,
+            'content': content_ref,
+            'wid': wid,
+            'laplace': laplace_ref,
+            'target': target,
+            'target_lengths': target_lengths,
+            'image_name': image_name
+        }
+
 
 
 """random sampling of style images during inference"""
