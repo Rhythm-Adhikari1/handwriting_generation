@@ -138,12 +138,13 @@ class IAMDataset(Dataset):
     def __len__(self):
         return len(self.indices)
     
-    def pad_to_multiple(img, base=8):
+    def pad_to_multiple(self, img, base=32):
         _, h, w = img.shape
-        if w % base != 0:
-            pad_w = base - (w % base)
-            img = F.pad(img, (0, pad_w, 0, 0), value=1.0)  # white padding
+        pad_h = (base - h % base) % base
+        pad_w = (base - w % base) % base
+        img = F.pad(img, (0, pad_w, 0, pad_h), value=1.0)
         return img
+
 
     ### Borrowed from GANwriting ###
     def label_padding(self, labels, max_len):
@@ -166,6 +167,7 @@ class IAMDataset(Dataset):
         style_ref, laplace_ref = self.get_style_ref(wr_id)
         style_ref = torch.from_numpy(style_ref).to(torch.float32) # [2, h , w] achor and positive
         laplace_ref = torch.from_numpy(laplace_ref).to(torch.float32) # [2, h , w] achor and positive
+        image = self.pad_to_multiple(image)
 
         return {'img':image,
                 'content':label, 
@@ -231,7 +233,7 @@ class IAMDataset(Dataset):
                 [self.syllable2index[t] for t in transcr[idx]]
             )
 
-            item['img'] = self.pad_to_multiple(item['img'])
+            
 
             try:
                 if max_s_width < self.style_len:
