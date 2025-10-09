@@ -173,12 +173,13 @@ class IAMDataset(Dataset):
         target_lengths = torch.IntTensor([len(t) for t in transcr])
         image_name = [item['image_name'] for item in batch]
 
-        # Force fixed style width to 352
-        max_s_width = self.style_len
+        # Force fixed style and image width to 352
+        max_s_width = self.style_len   # 352
+        max_img_width = 352            # 👈 added
 
         # allocate tensors
         imgs = torch.ones(
-            [len(batch), batch[0]['img'].shape[0], batch[0]['img'].shape[1], max(width)],
+            [len(batch), batch[0]['img'].shape[0], batch[0]['img'].shape[1], max_img_width],
             dtype=torch.float32
         )
         content_ref = torch.zeros([len(batch), max(c_width), 16, 16], dtype=torch.float32)
@@ -205,14 +206,20 @@ class IAMDataset(Dataset):
             except Exception as e:
                 print(f"⚠️ Error processing style/laplace for {item['image_name']}: {e}")
 
-            # --- image ---
+            # --- word image (fix width = 352) ---
             try:
-                imgs[idx, :, :, :item['img'].shape[2]] = item['img']
-            except:
-                print('⚠️ img', item['img'].shape)
+                img_w = item['img'].shape[2]
+                if img_w < max_img_width:
+                    imgs[idx, :, :, :img_w] = item['img']
+                else:
+                    imgs[idx, :, :, :] = item['img'][:, :, :max_img_width]
+            except Exception as e:
+                print(f"⚠️ img error for {item['image_name']}: {e}")
 
             # --- content symbols ---
             content_tensor = []
+            if not item['content']:
+                item['content'].append('|')
             try:
                 for syl in item['content']:
                     if syl not in self.syllable2index.keys():
@@ -248,7 +255,6 @@ class IAMDataset(Dataset):
             'target_lengths': target_lengths,
             'image_name': image_name
         }
-
 
 
 """random sampling of style images during inference"""

@@ -14,7 +14,7 @@ SOLVER:
   GRAD_L2_CLIP: 5.0
 TRAIN:
   TYPE: train
-  IMS_PER_BATCH: 32
+  IMS_PER_BATCH: 16
   SNAPSHOT_BEGIN: 100
   SNAPSHOT_ITERS: 500
   VALIDATE_BEGIN: 100
@@ -28,7 +28,7 @@ TEST:
   IMG_H: 64
   IMG_W: 64
 DATA_LOADER:
-  NUM_THREADS: 8
+  NUM_THREADS: 4
   IAMGE_PATH: ./data/Devanagari Dataset/style
   STYLE_PATH: ./data/Devanagari Dataset/style
   LAPLACE_PATH: ./data/Devanagari Dataset/laplace
