@@ -15,6 +15,7 @@ from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from models.loss import SupConLoss
+import os
 
 
 def main(opt):
@@ -32,6 +33,18 @@ def main(opt):
     torch.cuda.set_device(local_rank)
     device = torch.device(opt.device, local_rank)
     
+    # Setup Google Drive backup directory
+    drive_backup_dir = None
+    if opt.drive_backup:
+        drive_backup_dir = opt.drive_backup
+        if local_rank == 0:
+            os.makedirs(drive_backup_dir, exist_ok=True)
+            print(f"\n{'='*70}")
+            print(f"☁️  GOOGLE DRIVE BACKUP ENABLED")
+            print(f"{'='*70}")
+            print(f"📁 Checkpoints will be saved to:")
+            print(f"   {drive_backup_dir}")
+            print(f"{'='*70}\n")
 
     """ set dataset"""
     train_dataset = IAMDataset(
@@ -65,13 +78,13 @@ def main(opt):
                      attention_resolutions=(1,1), channel_mult=(1, 1), num_heads=cfg.MODEL.NUM_HEADS, 
                      context_dim=cfg.MODEL.EMB_DIM).to(device)
     
-    """load pretrained one_dm model"""
-    if len(opt.one_dm) > 0:
+    """load pretrained one_dm model (only if not resuming)"""
+    if len(opt.one_dm) > 0 and not opt.resume:
         unet.load_state_dict(torch.load(opt.one_dm, map_location=torch.device('cpu')))
         print('load pretrained one_dm model from {}'.format(opt.one_dm))
 
-    """load pretrained resnet18 model"""
-    if len(opt.feat_model) > 0:
+    """load pretrained resnet18 model (only if not resuming)"""
+    if len(opt.feat_model) > 0 and not opt.resume:
         checkpoint = torch.load(opt.feat_model, map_location=torch.device('cpu'))
         checkpoint['conv1.weight'] = checkpoint['conv1.weight'].mean(1).unsqueeze(1)
         miss, unexp = unet.mix_net.Feat_Encoder.load_state_dict(checkpoint, strict=False)
@@ -92,21 +105,39 @@ def main(opt):
     vae = vae.to(device)
 
     """build trainer"""
-    trainer = Trainer(diffusion, unet, vae, criterion, optimizer, train_loader, logs, test_loader, device)
-    trainer.train()
+    trainer = Trainer(diffusion, unet, vae, criterion, optimizer, train_loader, logs, 
+                     test_loader, device, drive_backup_dir=drive_backup_dir)
+    
+    # Start or resume training
+    trainer.train(resume=opt.resume)
 
 if __name__ == '__main__':
     """Parse input arguments"""
     parser = argparse.ArgumentParser()
-    parser.add_argument('--stable_dif_path', type=str, default='runwayml/stable-diffusion-v1-5', help='path to stable diffusion')
+    parser.add_argument('--stable_dif_path', type=str, default='runwayml/stable-diffusion-v1-5', 
+                        help='path to stable diffusion')
     parser.add_argument('--cfg', dest='cfg_file', default='configs/IAM64_scratch.yml',
                         help='Config file for training (and optionally testing)')
-    parser.add_argument('--feat_model', dest='feat_model', default='', help='pre-trained resnet18 model')
-    parser.add_argument('--one_dm', dest='one_dm', default='', help='pre-trained one_dm model')
+    parser.add_argument('--feat_model', dest='feat_model', default='', 
+                        help='pre-trained resnet18 model')
+    parser.add_argument('--one_dm', dest='one_dm', default='', 
+                        help='pre-trained one_dm model')
     parser.add_argument('--log', default='debug',
                         dest='log_name', required=False, help='the filename of log')
-    parser.add_argument('--noise_offset', default=0, type=float, help='control the strength of noise')
-    parser.add_argument('--device', type=str, default='cuda', help='device for training')
-    parser.add_argument('--local_rank', type=int, default=0, help='device for training')
+    parser.add_argument('--noise_offset', default=0, type=float, 
+                        help='control the strength of noise')
+    parser.add_argument('--device', type=str, default='cuda', 
+                        help='device for training')
+    parser.add_argument('--local_rank', type=int, default=0, 
+                        help='device for training')
+    
+    # Google Drive backup argument
+    parser.add_argument('--drive_backup', type=str, default='',
+                        help='Google Drive directory to backup checkpoints (leave empty to disable)')
+    
+    # Resume training argument
+    parser.add_argument('--resume', action='store_true', 
+                        help='Resume training from the latest checkpoint')
+    
     opt = parser.parse_args()
     main(opt)

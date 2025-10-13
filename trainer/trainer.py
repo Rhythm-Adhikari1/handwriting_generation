@@ -134,8 +134,8 @@ class Trainer:
         im = torchvision.transforms.ToPILImage()(grid)
         im.save(path)
         return im
+    
     # for visual check
-
     @torch.no_grad()
     def _valid_iter(self, epoch):
         print('loading test dataset, the number is', len(self.valid_data_loader))
@@ -161,9 +161,103 @@ class Trainer:
             out_path = os.path.join(self.save_sample_dir, f"epoch-{epoch}-{text}-process-{rank}.png")
             self._save_images(preds, out_path)
 
-    def train(self):
-        """start training iterations"""
-        for epoch in range(cfg.SOLVER.EPOCHS):
+    def _get_latest_checkpoint(self, check_drive_first=True):
+        """
+        Find the most recent checkpoint from Drive (priority) or local directory
+        Returns: (checkpoint_path, epoch_number) or (None, 0) if no checkpoint found
+        """
+        latest_checkpoint = None
+        latest_epoch = 0
+        
+        # Check Drive backup first if enabled
+        if check_drive_first and self.drive_backup_dir and os.path.exists(self.drive_backup_dir):
+            print(f"🔍 Searching for checkpoints in Drive: {self.drive_backup_dir}")
+            checkpoint_files = []
+            
+            try:
+                for filename in os.listdir(self.drive_backup_dir):
+                    if filename.endswith('-ckpt.pt'):
+                        # Extract epoch number from filename (e.g., "50-ckpt.pt" -> 50)
+                        try:
+                            epoch = int(filename.split('-')[0])
+                            filepath = os.path.join(self.drive_backup_dir, filename)
+                            checkpoint_files.append((filepath, epoch))
+                        except ValueError:
+                            continue
+                
+                if checkpoint_files:
+                    # Sort by epoch and get the latest
+                    checkpoint_files.sort(key=lambda x: x[1])
+                    latest_checkpoint, latest_epoch = checkpoint_files[-1]
+                    print(f"✅ Found latest checkpoint in Drive: {os.path.basename(latest_checkpoint)} (Epoch {latest_epoch})")
+                    return latest_checkpoint, latest_epoch
+            except Exception as e:
+                print(f"⚠️  Could not access Drive: {e}")
+        
+        # Fallback to local directory
+        print(f"🔍 Searching for checkpoints in local dir: {self.save_model_dir}")
+        checkpoint_files = []
+        
+        try:
+            for filename in os.listdir(self.save_model_dir):
+                if filename.endswith('-ckpt.pt'):
+                    try:
+                        epoch = int(filename.split('-')[0])
+                        filepath = os.path.join(self.save_model_dir, filename)
+                        checkpoint_files.append((filepath, epoch))
+                    except ValueError:
+                        continue
+            
+            if checkpoint_files:
+                checkpoint_files.sort(key=lambda x: x[1])
+                latest_checkpoint, latest_epoch = checkpoint_files[-1]
+                print(f"✅ Found latest checkpoint locally: {os.path.basename(latest_checkpoint)} (Epoch {latest_epoch})")
+                return latest_checkpoint, latest_epoch
+        except Exception as e:
+            print(f"⚠️  Could not access local directory: {e}")
+        
+        print("❌ No checkpoints found")
+        return None, 0
+
+    def _load_checkpoint(self, checkpoint_path):
+        """
+        Load model weights from checkpoint
+        """
+        try:
+            print(f"📥 Loading checkpoint from: {checkpoint_path}")
+            state_dict = torch.load(checkpoint_path, map_location=self.device)
+            self.model.module.load_state_dict(state_dict)
+            print(f"✅ Successfully loaded checkpoint!")
+            return True
+        except Exception as e:
+            print(f"❌ Error loading checkpoint: {e}")
+            return False
+
+    def train(self, resume=False, start_epoch=0):
+        """
+        Start training iterations
+        Args:
+            resume: If True, attempt to load latest checkpoint
+            start_epoch: Starting epoch (used when resuming)
+        """
+        # Resume from checkpoint if requested
+        if resume:
+            checkpoint_path, loaded_epoch = self._get_latest_checkpoint(check_drive_first=True)
+            if checkpoint_path:
+                if self._load_checkpoint(checkpoint_path):
+                    start_epoch = loaded_epoch + 1  # Continue from next epoch
+                    print(f"\n{'='*70}")
+                    print(f"🔄 RESUMING TRAINING from Epoch {start_epoch}")
+                    print(f"{'='*70}\n")
+                else:
+                    print(f"⚠️  Failed to load checkpoint, starting from scratch")
+                    start_epoch = 0
+            else:
+                print(f"⚠️  No checkpoint found, starting from scratch")
+                start_epoch = 0
+        
+        # Training loop
+        for epoch in range(start_epoch, cfg.SOLVER.EPOCHS):
             self.data_loader.sampler.set_epoch(epoch)
             print(f"Epoch:{epoch} of process {dist.get_rank()}")
             dist.barrier()
@@ -248,7 +342,6 @@ class Trainer:
         else:
             print(f"⚠️  No Drive backup configured")
             print(f"{'='*70}\n")
-
 
     def _manage_drive_checkpoints(self, max_checkpoints=3):
         """
