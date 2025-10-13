@@ -151,7 +151,7 @@ class Trainer:
     
         load_content = ContentData()
         # forward
-        texts = ['getting', 'both', 'success']
+        texts = ['संगीत', 'विश' , 'सुनेपछि', 'ज्यानलाई']
         for text in texts:
             rank = dist.get_rank()
             text_ref = load_content.get_content(text)
