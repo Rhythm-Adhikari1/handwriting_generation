@@ -10,10 +10,11 @@ from tqdm import tqdm
 from data_loader.loader import ContentData
 import torch.distributed as dist
 import torch.nn.functional as F
+import shutil
 
 class Trainer:
     def __init__(self, diffusion, unet, vae, criterion, optimizer, data_loader, 
-                logs, valid_data_loader=None, device=None, ocr_model=None, ctc_loss=None):
+                logs, valid_data_loader=None, device=None, ocr_model=None, ctc_loss=None, drive_backup_dir=None):
         self.model = unet
         self.diffusion = diffusion
         self.vae = vae
@@ -28,6 +29,13 @@ class Trainer:
         self.ocr_model = ocr_model
         self.ctc_criterion = ctc_loss
         self.device = device
+        
+        # Google Drive backup directory
+        self.drive_backup_dir = drive_backup_dir
+        if self.drive_backup_dir:
+            os.makedirs(self.drive_backup_dir, exist_ok=True)
+            if dist.get_rank() == 0:
+                print(f"✅ Drive backup enabled: {self.drive_backup_dir}")
       
     def _train_iter(self, data, step, pbar):
         self.model.train()
@@ -199,4 +207,81 @@ class Trainer:
         pbar.set_postfix(mse='%.6f' % (loss))
 
     def _save_checkpoint(self, epoch):
-        torch.save(self.model.module.state_dict(), os.path.join(self.save_model_dir, str(epoch)+'-'+"ckpt.pt"))
+        """
+        Save checkpoint to both local directory and Google Drive
+        Keeps only the 3 most recent checkpoints in Drive
+        """
+        checkpoint_filename = str(epoch) + '-' + "ckpt.pt"
+        
+        # Save to local directory (Colab temporary storage)
+        local_path = os.path.join(self.save_model_dir, checkpoint_filename)
+        torch.save(self.model.module.state_dict(), local_path)
+        
+        # Get file size for logging
+        file_size_mb = os.path.getsize(local_path) / (1024 * 1024)
+        
+        print(f"\n{'='*70}")
+        print(f"💾 CHECKPOINT SAVED - Epoch {epoch}")
+        print(f"{'='*70}")
+        print(f"📁 Local:  {local_path}")
+        print(f"📊 Size:   {file_size_mb:.2f} MB")
+        
+        # Copy to Google Drive with checkpoint rotation
+        if self.drive_backup_dir:
+            try:
+                drive_path = os.path.join(self.drive_backup_dir, checkpoint_filename)
+                
+                print(f"☁️  Copying to Drive...")
+                shutil.copy2(local_path, drive_path)
+                
+                print(f"✅ DRIVE:  {drive_path}")
+                
+                # Keep only the 3 most recent checkpoints
+                self._manage_drive_checkpoints(max_checkpoints=3)
+                
+                print(f"{'='*70}\n")
+                
+            except Exception as e:
+                print(f"❌ ERROR: Failed to copy to Drive: {e}")
+                print(f"⚠️  Checkpoint only saved locally at: {local_path}")
+                print(f"{'='*70}\n")
+        else:
+            print(f"⚠️  No Drive backup configured")
+            print(f"{'='*70}\n")
+
+
+    def _manage_drive_checkpoints(self, max_checkpoints=3):
+        """
+        Keep only the most recent N checkpoints in Drive backup directory
+        Deletes older checkpoints when limit is exceeded
+        """
+        try:
+            # Get all checkpoint files in Drive backup directory
+            checkpoint_files = []
+            for filename in os.listdir(self.drive_backup_dir):
+                if filename.endswith('-ckpt.pt'):
+                    filepath = os.path.join(self.drive_backup_dir, filename)
+                    # Get file creation/modification time
+                    mtime = os.path.getmtime(filepath)
+                    checkpoint_files.append((filepath, mtime, filename))
+            
+            # Sort by modification time (oldest first)
+            checkpoint_files.sort(key=lambda x: x[1])
+            
+            # Delete oldest checkpoints if we exceed the limit
+            num_to_delete = len(checkpoint_files) - max_checkpoints
+            if num_to_delete > 0:
+                print(f"🗑️  Removing {num_to_delete} old checkpoint(s) from Drive...")
+                for i in range(num_to_delete):
+                    filepath, _, filename = checkpoint_files[i]
+                    os.remove(filepath)
+                    print(f"   Deleted: {filename}")
+                
+                # Show remaining checkpoints
+                print(f"📦 Keeping {max_checkpoints} most recent checkpoints:")
+                for i in range(num_to_delete, len(checkpoint_files)):
+                    _, _, filename = checkpoint_files[i]
+                    print(f"   ✓ {filename}")
+        
+        except Exception as e:
+            print(f"⚠️  Warning: Could not manage old checkpoints: {e}")
