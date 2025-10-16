@@ -7,11 +7,11 @@ MODEL:
   NUM_HEADS: 4
   EMB_DIM: 512
 SOLVER:
-  BASE_LR: 0.00005
+  BASE_LR: 0.00002
   EPOCHS: 1000
   WARMUP_ITERS: 10000
   TYPE: AdamW  # TODO, support optional optimizer
-  GRAD_L2_CLIP: 2.0
+  GRAD_L2_CLIP: 1.0
 TRAIN:
   TYPE: train
   IMS_PER_BATCH: 32
