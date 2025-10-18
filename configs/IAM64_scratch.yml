@@ -8,7 +8,7 @@ MODEL:
   EMB_DIM: 512
 SOLVER:
   BASE_LR: 0.0001
-  EPOCHS: 180
+  EPOCHS: 160
   WARMUP_ITERS: 10000
   TYPE: AdamW  # TODO, support optional optimizer
   GRAD_L2_CLIP: 1.0
