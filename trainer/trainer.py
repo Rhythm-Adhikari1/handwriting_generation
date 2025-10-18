@@ -11,6 +11,8 @@ from data_loader.loader import ContentData
 import torch.distributed as dist
 import torch.nn.functional as F
 import shutil
+from torch.optim.lr_scheduler import CosineAnnealingLR
+
 
 class Trainer:
     def __init__(self, diffusion, unet, vae, criterion, optimizer, data_loader, 
@@ -30,6 +32,8 @@ class Trainer:
         self.ctc_criterion = ctc_loss
         self.device = device
         
+        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=cfg.SOLVER.EPOCHS, eta_min=1e-6)
+
         # Google Drive backup directory
         self.drive_backup_dir = drive_backup_dir
         if self.drive_backup_dir:
@@ -283,6 +287,14 @@ class Trainer:
                 else:
                     self._train_iter(data, total_step, pbar)
 
+
+            self.scheduler.step()
+
+            # Log learning rate to TensorBoard
+            if dist.get_rank() == 0:
+                current_lr = self.optimizer.param_groups[0]['lr']
+                self.tb_summary.add_scalar('learning_rate', current_lr, epoch)
+                
             if (epoch+1) > cfg.TRAIN.SNAPSHOT_BEGIN and (epoch+1) % cfg.TRAIN.SNAPSHOT_ITERS == 0:
                 if dist.get_rank() == 0:
                     self._save_checkpoint(epoch)
