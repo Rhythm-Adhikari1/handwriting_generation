@@ -62,11 +62,13 @@ class Trainer:
         
        
         predicted_noise, high_nce_emb, low_nce_emb = self.model(x_t, t, style_ref, laplace_ref, content_ref, tag='train')
+
+
         # calculate loss
         recon_loss = self.recon_criterion(predicted_noise, noise)
         high_nce_loss = self.nce_criterion(high_nce_emb, labels=wid)
         low_nce_loss = self.nce_criterion(low_nce_emb, labels=wid)
-        loss = recon_loss + high_nce_loss + low_nce_loss
+        loss = recon_loss + 0.3 * high_nce_loss + 0.3 * low_nce_loss
 
         # backward and update trainable parameters
         self.optimizer.zero_grad()
@@ -105,7 +107,7 @@ class Trainer:
         x_t, noise = self.diffusion.noise_images(latent_images, t)
         
         x_start, predicted_noise, high_nce_emb, low_nce_emb = self.diffusion.train_ddim(self.model, x_t, style_ref, laplace_ref,
-                                                        content_ref, t, sampling_timesteps=5)
+                                                        content_ref, t, sampling_timesteps=10)
  
         # calculate loss
         recon_loss = self.recon_criterion(predicted_noise, noise)

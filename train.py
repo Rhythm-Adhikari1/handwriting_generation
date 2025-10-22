@@ -103,6 +103,7 @@ def main(opt):
     """Freeze vae and text_encoder"""
     vae.requires_grad_(False)
     vae = vae.to(device)
+    
 
     """build trainer"""
     trainer = Trainer(diffusion, unet, vae, criterion, optimizer, train_loader, logs, 
