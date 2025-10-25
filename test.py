@@ -11,6 +11,52 @@ import torchvision
 import torch.distributed as dist
 from utils.util import fix_seed
 
+
+def get_latest_checkpoint(drive_backup_dir=None, local_dir=None):
+    """
+    Find the most recent checkpoint from Drive (priority) or local directory.
+    Returns: checkpoint_path or None if not found
+    """
+    latest_checkpoint = None
+    latest_epoch = 0
+
+    # ---- Search in Google Drive first ----
+    if drive_backup_dir and os.path.exists(drive_backup_dir):
+        print(f"🔍 Searching for checkpoints in Drive: {drive_backup_dir}")
+        checkpoint_files = []
+        for filename in os.listdir(drive_backup_dir):
+            if filename.endswith('-ckpt.pt'):
+                try:
+                    epoch = int(filename.split('-')[0])
+                    checkpoint_files.append((os.path.join(drive_backup_dir, filename), epoch))
+                except ValueError:
+                    continue
+        if checkpoint_files:
+            checkpoint_files.sort(key=lambda x: x[1])
+            latest_checkpoint, latest_epoch = checkpoint_files[-1]
+            print(f"✅ Found latest checkpoint in Drive: {os.path.basename(latest_checkpoint)} (Epoch {latest_epoch})")
+            return latest_checkpoint
+
+    # ---- Fallback: search in local directory ----
+    if local_dir and os.path.exists(local_dir):
+        print(f"🔍 Searching for checkpoints locally in: {local_dir}")
+        checkpoint_files = []
+        for filename in os.listdir(local_dir):
+            if filename.endswith('-ckpt.pt'):
+                try:
+                    epoch = int(filename.split('-')[0])
+                    checkpoint_files.append((os.path.join(local_dir, filename), epoch))
+                except ValueError:
+                    continue
+        if checkpoint_files:
+            checkpoint_files.sort(key=lambda x: x[1])
+            latest_checkpoint, latest_epoch = checkpoint_files[-1]
+            print(f"✅ Found latest checkpoint locally: {os.path.basename(latest_checkpoint)} (Epoch {latest_epoch})")
+            return latest_checkpoint
+
+    print("❌ No checkpoint found in Drive or local directory.")
+    return None
+
 def main(opt):
     """ load config file into cfg"""
     cfg_from_file(opt.cfg_file)
@@ -64,11 +110,25 @@ def main(opt):
                      context_dim=cfg.MODEL.EMB_DIM).to(opt.device)
     
     """load pretrained one_dm model"""
-    if len(opt.one_dm) > 0: 
-        unet.load_state_dict(torch.load(f'{opt.one_dm}', map_location=torch.device('cpu')))
-        print('load pretrained one_dm model from {}'.format(opt.one_dm))
+    if opt.one_dm.lower() == 'auto':
+        checkpoint_path = get_latest_checkpoint(
+            drive_backup_dir=opt.drive_backup_dir,
+            local_dir=opt.local_model_dir
+        )
+        if checkpoint_path:
+            unet.load_state_dict(torch.load(checkpoint_path, map_location=opt.device))
+            print(f"✅ Loaded model checkpoint from {checkpoint_path}")
+        else:
+            raise FileNotFoundError("❌ No valid checkpoint found in Drive or local directory.")
     else:
-        raise IOError('input the correct checkpoint path')
+        # Manually provided checkpoint path
+        if len(opt.one_dm) > 0:
+            unet.load_state_dict(torch.load(opt.one_dm, map_location=opt.device))
+            print(f"✅ Loaded model from {opt.one_dm}")
+        else:
+            raise IOError("❌ Please provide a valid checkpoint path or use --one_dm auto")
+
+
     unet.eval()
 
     vae = AutoencoderKL.from_pretrained(opt.stable_dif_path, subfolder="vae")
@@ -115,18 +175,24 @@ def main(opt):
                 image.save(os.path.join(out_path, x_text + ".png"))
 
 if __name__ == '__main__':
-    """Parse input arguments"""
     parser = argparse.ArgumentParser()
     parser.add_argument('--cfg', dest='cfg_file', default='configs/IAM64.yml',
-                        help='Config file for training (and optionally testing)')
-    parser.add_argument('--dir', dest='save_dir', default='Generated', help='target dir for storing the generated characters')
-    parser.add_argument('--one_dm', dest='one_dm', default='', required=True, help='pre-train model for generating')
-    parser.add_argument('--generate_type', dest='generate_type', required=True, help='four generation settings:iv_s, iv_u, oov_s, oov_u')
+                        help='Config file for training/testing')
+    parser.add_argument('--dir', dest='save_dir', default='Generated',
+                        help='target dir for storing generated characters')
+    parser.add_argument('--one_dm', dest='one_dm', default='auto',
+                        help='pretrained model path or "auto" to load from Drive/local')
+    parser.add_argument('--generate_type', dest='generate_type', required=True,
+                        help='four generation settings: iv_s, iv_u, oov_s, oov_u')
     parser.add_argument('--device', type=str, default='cuda', help='device for test')
     parser.add_argument('--stable_dif_path', type=str, default='runwayml/stable-diffusion-v1-5')
     parser.add_argument('--sampling_timesteps', type=int, default=50)
     parser.add_argument('--sample_method', type=str, default='ddim', help='choose the method for sampling')
     parser.add_argument('--eta', type=float, default=0.0)
-    parser.add_argument('--local_rank', type=int, default=0, help='device for training')
+    parser.add_argument('--local_rank', type=int, default=0)
+    parser.add_argument('--drive_backup_dir', type=str, default='/content/drive/MyDrive/model_checkpoints',
+                        help='Google Drive directory containing model checkpoints')
+    parser.add_argument('--local_model_dir', type=str, default='checkpoints',
+                        help='Local directory for fallback checkpoints')
     opt = parser.parse_args()
     main(opt)
