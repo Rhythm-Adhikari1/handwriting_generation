@@ -357,7 +357,7 @@ class Trainer:
             print(f"⚠️  No Drive backup configured")
             print(f"{'='*70}\n")
 
-    def _manage_drive_checkpoints(self, max_checkpoints=3):
+    def _manage_drive_checkpoints(self, max_checkpoints=20):
         """
         Keep only the most recent N checkpoints in Drive backup directory
         Deletes older checkpoints when limit is exceeded
