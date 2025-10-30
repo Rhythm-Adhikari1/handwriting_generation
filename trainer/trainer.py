@@ -224,66 +224,82 @@ class Trainer:
 
 
     def _load_checkpoint(self, checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        print("Checkpoint type:", type(checkpoint))
-        print("Checkpoint keys (if dict):", getattr(checkpoint, 'keys', lambda: None)())
-        
-        # Case 1: checkpoint is a full dict with model + optimizer + scheduler
-        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-            state_dict = checkpoint['model_state_dict']
-            epoch = checkpoint.get('epoch', 0)
-            if hasattr(self.model, 'module'):
-                self.model.module.load_state_dict(state_dict)
-            else:
-                self.model.load_state_dict(state_dict)
-            print("✅ Model weights loaded from full checkpoint")
+        """
+        Load checkpoint for model. If optimizer/scheduler state is missing, 
+        treat them as fresh (initial) states.
+        """
+        try:
+            print(f"📥 Loading checkpoint from: {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            
+            # Load model weights
+            self.model.module.load_state_dict(checkpoint['model_state_dict'])
+            print(f"✅ Model weights loaded successfully")
 
-            # Load optimizer/scheduler if exists
+            # Load optimizer state if exists
             if 'optimizer_state_dict' in checkpoint:
                 self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
                 print("✅ Optimizer state loaded")
+            else:
+                print("⚠️ No optimizer state found; starting fresh optimizer")
+
+            # Load scheduler state if exists
             if 'scheduler_state_dict' in checkpoint:
                 self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
                 print("✅ Scheduler state loaded")
-
-        # Case 2: checkpoint is just state_dict (weights-only)
-        else:
-            state_dict = checkpoint
-            if hasattr(self.model, 'module'):
-                self.model.module.load_state_dict(state_dict)
             else:
-                self.model.load_state_dict(state_dict)
-            print("✅ Model weights loaded (weights-only checkpoint)")
-            epoch = 0
+                print("⚠️ No scheduler state found; starting fresh scheduler")
 
-        return True, epoch
+            # ✅ Normalize epoch value (handles strings like "0_half")
+            epoch = checkpoint.get('epoch', 0)
+            if isinstance(epoch, str):
+                if '_half' in epoch:
+                    try:
+                        epoch = float(epoch.replace('_half', '')) + 0.5
+                    except:
+                        print(f"⚠️ Could not parse epoch '{epoch}', defaulting to 0.0")
+                        epoch = 0.0
+                else:
+                    try:
+                        epoch = float(epoch)
+                    except:
+                        print(f"⚠️ Could not parse epoch '{epoch}', defaulting to 0.0")
+                        epoch = 0.0
+
+            return True, epoch
+
+        except Exception as e:
+            print(f"❌ Error loading checkpoint: {e}")
+            return False, 0
+
+
+
 
     def train(self, resume=False, start_epoch=0):
         start_step = 0
         if resume:
-          checkpoint_path, loaded_epoch = self._get_latest_checkpoint(check_drive_first=True)
-          if checkpoint_path:
-              success, epoch_loaded = self._load_checkpoint(checkpoint_path)
-              if success:
-                  # if only weights exist, optimizer/scheduler are fresh, start first epoch
-                  if epoch_loaded == 0:
-                      start_epoch = 0
-                      start_step = 0
-                      print("⚠️ Only model weights found; starting first epoch with fresh optimizer/scheduler")
-                  elif epoch_loaded % 1 == 0.5:  # half-epoch
-                      start_epoch = int(epoch_loaded)  # continue current epoch
-                      start_step = len(self.data_loader)//2  # start from midpoint
-                  else:
-                      start_epoch = int(epoch_loaded)
-                      start_step = 0
+            checkpoint_path, loaded_epoch = self._get_latest_checkpoint(check_drive_first=True)
+            if checkpoint_path:
+                success, epoch_loaded = self._load_checkpoint(checkpoint_path)
+                if success:
+                    epoch_loaded = float(epoch_loaded)  # ensure float
+                    if epoch_loaded % 1 == 0.5:  # half-epoch
+                        start_epoch = int(epoch_loaded)
+                        start_step = len(self.data_loader)//2
+                    else:
+                        start_epoch = int(epoch_loaded)
+                        start_step = 0
 
-                  print(f"\n{'='*70}")
-                  print(f"🔄 RESUMING TRAINING from Epoch {start_epoch}")
-                  print(f"{'='*70}\n")
-              else:
-                  print("⚠️ Failed to load checkpoint, starting from scratch")
-                  start_epoch = 0
 
+                    print(f"\n{'='*70}")
+                    print(f"🔄 RESUMING TRAINING from Epoch {start_epoch}")
+                    print(f"{'='*70}\n")
+                else:
+                    print("⚠️  Failed to load checkpoint, starting from scratch")
+                    start_epoch = 0
+            else:
+                print("⚠️  No checkpoint found, starting from scratch")
+                start_epoch = 0
         
         # Training loop
         for epoch in range(start_epoch, cfg.SOLVER.EPOCHS):
