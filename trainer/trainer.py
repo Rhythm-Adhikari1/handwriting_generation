@@ -68,7 +68,7 @@ class Trainer:
         recon_loss = self.recon_criterion(predicted_noise, noise)
         high_nce_loss = self.nce_criterion(high_nce_emb, labels=wid)
         low_nce_loss = self.nce_criterion(low_nce_emb, labels=wid)
-        loss = recon_loss + 0.4 * high_nce_loss + 0.4 * low_nce_loss
+        loss = recon_loss + 0.3 * high_nce_loss + 0.3 * low_nce_loss
 
         # backward and update trainable parameters
         self.optimizer.zero_grad()
@@ -169,97 +169,118 @@ class Trainer:
 
     def _get_latest_checkpoint(self, check_drive_first=True):
         """
-        Find the most recent checkpoint from Drive (priority) or local directory
+        Find the most recent checkpoint from Drive (priority) or local directory.
+        Handles integer and half-epoch checkpoints (e.g., "50-ckpt.pt", "50_half-ckpt.pt").
         Returns: (checkpoint_path, epoch_number) or (None, 0) if no checkpoint found
         """
         latest_checkpoint = None
-        latest_epoch = 0
-        
-        # Check Drive backup first if enabled
-        if check_drive_first and self.drive_backup_dir and os.path.exists(self.drive_backup_dir):
-            print(f"🔍 Searching for checkpoints in Drive: {self.drive_backup_dir}")
-            checkpoint_files = []
-            
+        latest_epoch = 0.0
+
+        def parse_epoch(filename):
+            # Remove '-ckpt.pt'
+            name = filename.replace('-ckpt.pt', '')
+            if '_half' in name:
+                try:
+                    return float(name.replace('_half', '')) + 0.5
+                except:
+                    return None
+            else:
+                try:
+                    return float(name)
+                except:
+                    return None
+
+        # Helper to search directory
+        def search_dir(directory):
+            ckpt_files = []
             try:
-                for filename in os.listdir(self.drive_backup_dir):
-                    if filename.endswith('-ckpt.pt'):
-                        # Extract epoch number from filename (e.g., "50-ckpt.pt" -> 50)
-                        try:
-                            epoch = int(filename.split('-')[0])
-                            filepath = os.path.join(self.drive_backup_dir, filename)
-                            checkpoint_files.append((filepath, epoch))
-                        except ValueError:
-                            continue
-                
-                if checkpoint_files:
-                    # Sort by epoch and get the latest
-                    checkpoint_files.sort(key=lambda x: x[1])
-                    latest_checkpoint, latest_epoch = checkpoint_files[-1]
-                    print(f"✅ Found latest checkpoint in Drive: {os.path.basename(latest_checkpoint)} (Epoch {latest_epoch})")
-                    return latest_checkpoint, latest_epoch
+                for f in os.listdir(directory):
+                    if f.endswith('-ckpt.pt'):
+                        ep = parse_epoch(f)
+                        if ep is not None:
+                            ckpt_files.append((os.path.join(directory, f), ep))
+                if ckpt_files:
+                    ckpt_files.sort(key=lambda x: x[1])
+                    return ckpt_files[-1]  # Latest checkpoint
             except Exception as e:
-                print(f"⚠️  Could not access Drive: {e}")
-        
-        # Fallback to local directory
-        print(f"🔍 Searching for checkpoints in local dir: {self.save_model_dir}")
-        checkpoint_files = []
-        
-        try:
-            for filename in os.listdir(self.save_model_dir):
-                if filename.endswith('-ckpt.pt'):
-                    try:
-                        epoch = int(filename.split('-')[0])
-                        filepath = os.path.join(self.save_model_dir, filename)
-                        checkpoint_files.append((filepath, epoch))
-                    except ValueError:
-                        continue
-            
-            if checkpoint_files:
-                checkpoint_files.sort(key=lambda x: x[1])
-                latest_checkpoint, latest_epoch = checkpoint_files[-1]
-                print(f"✅ Found latest checkpoint locally: {os.path.basename(latest_checkpoint)} (Epoch {latest_epoch})")
+                print(f"⚠️ Could not access {directory}: {e}")
+            return None, 0.0
+
+        # Check Drive first
+        if check_drive_first and self.drive_backup_dir and os.path.exists(self.drive_backup_dir):
+            latest_checkpoint, latest_epoch = search_dir(self.drive_backup_dir)
+            if latest_checkpoint:
+                print(f"✅ Found latest checkpoint in Drive: {os.path.basename(latest_checkpoint)} (Epoch {latest_epoch})")
                 return latest_checkpoint, latest_epoch
-        except Exception as e:
-            print(f"⚠️  Could not access local directory: {e}")
-        
+
+        # Fallback to local
+        latest_checkpoint, latest_epoch = search_dir(self.save_model_dir)
+        if latest_checkpoint:
+            print(f"✅ Found latest checkpoint locally: {os.path.basename(latest_checkpoint)} (Epoch {latest_epoch})")
+            return latest_checkpoint, latest_epoch
+
         print("❌ No checkpoints found")
-        return None, 0
+        return None, 0.0
+
 
     def _load_checkpoint(self, checkpoint_path):
         """
-        Load model weights from checkpoint
+        Load checkpoint for model. If optimizer/scheduler state is missing, 
+        treat them as fresh (initial) states.
         """
         try:
             print(f"📥 Loading checkpoint from: {checkpoint_path}")
-            state_dict = torch.load(checkpoint_path, map_location=self.device)
-            self.model.module.load_state_dict(state_dict)
-            print(f"✅ Successfully loaded checkpoint!")
-            return True
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            
+            # Load model weights
+            self.model.module.load_state_dict(checkpoint['model_state_dict'])
+            print(f"✅ Model weights loaded successfully")
+
+            # Load optimizer state if exists
+            if 'optimizer_state_dict' in checkpoint:
+                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                print("✅ Optimizer state loaded")
+            else:
+                print("⚠️ No optimizer state found; starting fresh optimizer")
+
+            # Load scheduler state if exists
+            if 'scheduler_state_dict' in checkpoint:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                print("✅ Scheduler state loaded")
+            else:
+                print("⚠️ No scheduler state found; starting fresh scheduler")
+
+            # Return epoch if exists, else 0
+            epoch = checkpoint.get('epoch', 0)
+            return True, epoch
+
         except Exception as e:
             print(f"❌ Error loading checkpoint: {e}")
-            return False
+            return False, 0
+
 
     def train(self, resume=False, start_epoch=0):
-        """
-        Start training iterations
-        Args:
-            resume: If True, attempt to load latest checkpoint
-            start_epoch: Starting epoch (used when resuming)
-        """
-        # Resume from checkpoint if requested
+        start_step = 0
         if resume:
             checkpoint_path, loaded_epoch = self._get_latest_checkpoint(check_drive_first=True)
             if checkpoint_path:
-                if self._load_checkpoint(checkpoint_path):
-                    start_epoch = loaded_epoch + 1  # Continue from next epoch
+                success, epoch_loaded = self._load_checkpoint(checkpoint_path)
+                if success:
+                    if epoch_loaded % 1 == 0.5:  # half-epoch
+                        start_epoch = int(epoch_loaded)  # continue current epoch
+                        start_step = len(self.data_loader)//2  # start from midpoint
+                    else:
+                        start_epoch = int(epoch_loaded)
+                        start_step = 0
+
                     print(f"\n{'='*70}")
                     print(f"🔄 RESUMING TRAINING from Epoch {start_epoch}")
                     print(f"{'='*70}\n")
                 else:
-                    print(f"⚠️  Failed to load checkpoint, starting from scratch")
+                    print("⚠️  Failed to load checkpoint, starting from scratch")
                     start_epoch = 0
             else:
-                print(f"⚠️  No checkpoint found, starting from scratch")
+                print("⚠️  No checkpoint found, starting from scratch")
                 start_epoch = 0
         
         # Training loop
@@ -267,88 +288,80 @@ class Trainer:
             self.data_loader.sampler.set_epoch(epoch)
             print(f"Epoch:{epoch} of process {dist.get_rank()}")
             dist.barrier()
-            if dist.get_rank() == 0:
-                pbar = tqdm(self.data_loader, leave=False)
-            else:
-                pbar = self.data_loader
+            pbar = tqdm(self.data_loader, leave=False) if dist.get_rank() == 0 else self.data_loader
 
             for step, data in enumerate(pbar):
+                if step < start_step:
+                    continue 
                 total_step = epoch * len(self.data_loader) + step
+
+                # Normal / fine-tune iteration
                 if self.ocr_model is not None:
                     self._finetune_iter(data, total_step, pbar)
-                    if (total_step+1) > cfg.TRAIN.SNAPSHOT_BEGIN and (total_step+1) % cfg.TRAIN.SNAPSHOT_ITERS == 0:
-                        if dist.get_rank() == 0:
-                            self._save_checkpoint(total_step)
-                    else:
-                        pass
-                    if self.valid_data_loader is not None:
-                        if (total_step+1) > cfg.TRAIN.VALIDATE_BEGIN  and (total_step+1) % cfg.TRAIN.VALIDATE_ITERS == 0:
-                            self._valid_iter(total_step)
-                        else:
-                            pass 
                 else:
                     self._train_iter(data, total_step, pbar)
 
+                # ✅ Save at half epoch (midpoint)
+                if step == len(self.data_loader)//2 and dist.get_rank() == 0:
+                    self._save_checkpoint(f"{epoch}_half")
 
+            # ✅ Scheduler step at end of each epoch
             self.scheduler.step()
 
-            # Log learning rate to TensorBoard
+            # Log LR
             if dist.get_rank() == 0:
                 current_lr = self.optimizer.param_groups[0]['lr']
                 self.tb_summary.add_scalar('learning_rate', current_lr, epoch)
-                
-            if (epoch+1) > cfg.TRAIN.SNAPSHOT_BEGIN and (epoch+1) % cfg.TRAIN.SNAPSHOT_ITERS == 0:
+            
+            # Save at epoch end
+            if (epoch + 1) > cfg.TRAIN.SNAPSHOT_BEGIN and (epoch + 1) % cfg.TRAIN.SNAPSHOT_ITERS == 0:
                 if dist.get_rank() == 0:
                     self._save_checkpoint(epoch)
-                else:
-                    pass
-            if self.valid_data_loader is not None:
-                if (epoch+1) > cfg.TRAIN.VALIDATE_BEGIN  and (epoch+1) % cfg.TRAIN.VALIDATE_ITERS == 0:
-                    self._valid_iter(epoch)
-            else:
-                pass
+
+            # Validation
+            if self.valid_data_loader is not None and (epoch + 1) > cfg.TRAIN.VALIDATE_BEGIN and \
+                (epoch + 1) % cfg.TRAIN.VALIDATE_ITERS == 0:
+                self._valid_iter(epoch)
 
             if dist.get_rank() == 0:
                 pbar.close()
+
 
     def _progress(self, loss, pbar):
         pbar.set_postfix(mse='%.6f' % (loss))
 
     def _save_checkpoint(self, epoch):
         """
-        Save checkpoint to both local directory and Google Drive
+        Save full training state (model + optimizer + scheduler) to both local and Drive
         Keeps only the 3 most recent checkpoints in Drive
         """
-        checkpoint_filename = str(epoch) + '-' + "ckpt.pt"
-        
-        # Save to local directory (Colab temporary storage)
+        checkpoint_filename = f"{epoch}-ckpt.pt"
         local_path = os.path.join(self.save_model_dir, checkpoint_filename)
-        torch.save(self.model.module.state_dict(), local_path)
         
-        # Get file size for logging
+        # ✅ Save full state dictionary
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': self.model.module.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+        }
+        torch.save(checkpoint, local_path)
+
         file_size_mb = os.path.getsize(local_path) / (1024 * 1024)
-        
         print(f"\n{'='*70}")
         print(f"💾 CHECKPOINT SAVED - Epoch {epoch}")
         print(f"{'='*70}")
         print(f"📁 Local:  {local_path}")
         print(f"📊 Size:   {file_size_mb:.2f} MB")
-        
-        # Copy to Google Drive with checkpoint rotation
+
         if self.drive_backup_dir:
             try:
                 drive_path = os.path.join(self.drive_backup_dir, checkpoint_filename)
-                
                 print(f"☁️  Copying to Drive...")
                 shutil.copy2(local_path, drive_path)
-                
                 print(f"✅ DRIVE:  {drive_path}")
-                
-                # Keep only the 3 most recent checkpoints
-                self._manage_drive_checkpoints(max_checkpoints=3)
-                
+                #self._manage_drive_checkpoints(max_checkpoints=3)
                 print(f"{'='*70}\n")
-                
             except Exception as e:
                 print(f"❌ ERROR: Failed to copy to Drive: {e}")
                 print(f"⚠️  Checkpoint only saved locally at: {local_path}")
@@ -357,7 +370,8 @@ class Trainer:
             print(f"⚠️  No Drive backup configured")
             print(f"{'='*70}\n")
 
-    def _manage_drive_checkpoints(self, max_checkpoints=20):
+
+    def _manage_drive_checkpoints(self, max_checkpoints=3):
         """
         Keep only the most recent N checkpoints in Drive backup directory
         Deletes older checkpoints when limit is exceeded
