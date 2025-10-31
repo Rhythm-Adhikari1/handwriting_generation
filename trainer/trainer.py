@@ -309,7 +309,7 @@ class Trainer:
             pbar = tqdm(self.data_loader, leave=False) if dist.get_rank() == 0 else self.data_loader
 
             for step, data in enumerate(pbar):
-                if step < start_step + 2 :
+                if step < start_step + 1 :
                     continue 
                 total_step = epoch * len(self.data_loader) + step
 
@@ -343,6 +343,8 @@ class Trainer:
 
             if dist.get_rank() == 0:
                 pbar.close()
+
+            start_step = 0  # reset for next epoch
 
 
     def _progress(self, loss, pbar):
