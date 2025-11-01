@@ -309,7 +309,7 @@ class Trainer:
             pbar = tqdm(self.data_loader, leave=False) if dist.get_rank() == 0 else self.data_loader
 
             for step, data in enumerate(pbar):
-                if step < start_step + 1 :
+                if step < start_step  :
                     continue 
                 total_step = epoch * len(self.data_loader) + step
 
@@ -320,8 +320,9 @@ class Trainer:
                     self._train_iter(data, total_step, pbar)
 
                 # ✅ Save at half epoch (midpoint)
-                if step == len(self.data_loader)//2 and dist.get_rank() == 0:
-                    self._save_checkpoint(f"{epoch}_half")
+                if start_step == 0:  # only if not resuming from half-epoch
+                    if step == len(self.data_loader)//2 and dist.get_rank() == 0:
+                        self._save_checkpoint(f"{epoch}_half")
 
             # ✅ Scheduler step at end of each epoch
             self.scheduler.step()
