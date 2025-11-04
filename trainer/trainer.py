@@ -32,7 +32,7 @@ class Trainer:
         self.ctc_criterion = ctc_loss
         self.device = device
         
-        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=160, eta_min=1e-6)
+        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=130, eta_min=1e-6)
 
         # Google Drive backup directory
         self.drive_backup_dir = drive_backup_dir
