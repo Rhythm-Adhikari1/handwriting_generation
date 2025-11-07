@@ -169,57 +169,57 @@ class Trainer:
 
     def _get_latest_checkpoint(self, check_drive_first=True):
         """
-        Find the most recent checkpoint from Drive (priority) or local directory.
-        Handles integer and half-epoch checkpoints (e.g., "50-ckpt.pt", "50_half-ckpt.pt").
-        Returns: (checkpoint_path, epoch_number) or (None, 0) if no checkpoint found
+        Find the most recently modified checkpoint file.
+        Priority: Drive (if enabled) -> Local directory.
+        Returns (checkpoint_path, epoch_value)
         """
-        latest_checkpoint = None
-        latest_epoch = 0.0
-
         def parse_epoch(filename):
-            # Remove '-ckpt.pt'
             name = filename.replace('-ckpt.pt', '')
             if '_half' in name:
                 try:
                     return float(name.replace('_half', '')) + 0.5
                 except:
-                    return None
+                    return 0.0
             else:
                 try:
                     return float(name)
                 except:
-                    return None
+                    return 0.0
 
-        # Helper to search directory
-        def search_dir(directory):
+        def find_latest_in_dir(directory):
             ckpt_files = []
-            try:
-                for f in os.listdir(directory):
-                    if f.endswith('-ckpt.pt'):
-                        ep = parse_epoch(f)
-                        if ep is not None:
-                            ckpt_files.append((os.path.join(directory, f), ep))
-                if ckpt_files:
-                    ckpt_files.sort(key=lambda x: x[1])
-                    return ckpt_files[-1]  # Latest checkpoint
-            except Exception as e:
-                print(f"⚠️ Could not access {directory}: {e}")
-            return None, 0.0
+            if not os.path.exists(directory):
+                return None, 0.0
 
-        # Check Drive first
+            for f in os.listdir(directory):
+                if f.endswith('-ckpt.pt'):
+                    path = os.path.join(directory, f)
+                    mtime = os.path.getmtime(path)
+                    epoch = parse_epoch(f)
+                    ckpt_files.append((path, mtime, epoch))
+
+            if not ckpt_files:
+                return None, 0.0
+
+            # ✅ Sort by modification time
+            ckpt_files.sort(key=lambda x: x[1])
+            latest_path, _, latest_epoch = ckpt_files[-1]
+            return latest_path, latest_epoch
+
+        # 1️⃣ Check Drive first
         if check_drive_first and self.drive_backup_dir and os.path.exists(self.drive_backup_dir):
-            latest_checkpoint, latest_epoch = search_dir(self.drive_backup_dir)
-            if latest_checkpoint:
-                print(f"✅ Found latest checkpoint in Drive: {os.path.basename(latest_checkpoint)} (Epoch {latest_epoch})")
-                return latest_checkpoint, latest_epoch
+            drive_ckpt, drive_epoch = find_latest_in_dir(self.drive_backup_dir)
+            if drive_ckpt:
+                print(f"✅ Found latest checkpoint in Drive: {os.path.basename(drive_ckpt)} (Epoch {drive_epoch})")
+                return drive_ckpt, drive_epoch
 
-        # Fallback to local
-        latest_checkpoint, latest_epoch = search_dir(self.save_model_dir)
-        if latest_checkpoint:
-            print(f"✅ Found latest checkpoint locally: {os.path.basename(latest_checkpoint)} (Epoch {latest_epoch})")
-            return latest_checkpoint, latest_epoch
+        # 2️⃣ Fallback to local directory
+        local_ckpt, local_epoch = find_latest_in_dir(self.save_model_dir)
+        if local_ckpt:
+            print(f"✅ Found latest checkpoint locally: {os.path.basename(local_ckpt)} (Epoch {local_epoch})")
+            return local_ckpt, local_epoch
 
-        print("❌ No checkpoints found")
+        print("❌ No checkpoints found.")
         return None, 0.0
 
 
@@ -283,22 +283,26 @@ class Trainer:
                 success, epoch_loaded = self._load_checkpoint(checkpoint_path)
                 if success:
                     epoch_loaded = float(epoch_loaded)  # ensure float
-                    if epoch_loaded % 1 == 0.5:  # half-epoch
-                        start_epoch = int(epoch_loaded)
-                        start_step = len(self.data_loader)//2
-                    else:
-                        start_epoch = int(epoch_loaded)
-                        start_step = 0
 
+                    if epoch_loaded % 1 == 0.5:  
+                        # Half-epoch checkpoint → resume second half of that epoch
+                        start_epoch = int(epoch_loaded)
+                        start_step = len(self.data_loader) // 2
+                        print(f"🔁 Resuming from half-epoch {epoch_loaded} (Epoch {start_epoch}, Step {start_step})")
+                    else:
+                        # Full epoch checkpoint → start NEXT epoch
+                        start_epoch = int(epoch_loaded) + 1
+                        start_step = 0
+                        print(f"🔁 Resuming from epoch {epoch_loaded} → Starting epoch {start_epoch}")
 
                     print(f"\n{'='*70}")
-                    print(f"🔄 RESUMING TRAINING from Epoch {start_epoch}")
+                    print(f"🔄 TRAINING RESUMED at Epoch {start_epoch}")
                     print(f"{'='*70}\n")
                 else:
-                    print("⚠️  Failed to load checkpoint, starting from scratch")
+                    print("⚠️ Failed to load checkpoint, starting from scratch")
                     start_epoch = 0
             else:
-                print("⚠️  No checkpoint found, starting from scratch")
+                print("⚠️ No checkpoint found, starting from scratch")
                 start_epoch = 0
         
         # Training loop
